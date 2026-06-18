@@ -1,0 +1,1287 @@
+-- // === LOAD OBSIDIAN LIB ===
+local Library, ThemeManager, SaveManager
+
+local function tryLoad(url)
+    local ok, result = pcall(function()
+        return loadstring(game:HttpGet(url))()
+    end)
+    if ok and result then return result end
+    return nil
+end
+
+Library = tryLoad('https://raw.githubusercontent.com/deividcomsono/Obsidian/main/Library.lua')
+if Library then
+    ThemeManager = tryLoad('https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/ThemeManager.lua')
+    SaveManager  = tryLoad('https://raw.githubusercontent.com/deividcomsono/Obsidian/main/addons/SaveManager.lua')
+end
+
+if not Library then
+    warn("[Wolf] FAILED TO LOAD OBSIDIAN!")
+    local sg = Instance.new("ScreenGui", game:GetService("CoreGui"))
+    local f = Instance.new("Frame", sg)
+    f.Size = UDim2.new(0, 400, 0, 100)
+    f.Position = UDim2.new(0.5, -200, 0.5, -50)
+    f.BackgroundColor3 = Color3.fromRGB(50, 0, 0)
+    local l = Instance.new("TextLabel", f)
+    l.Size = UDim2.new(1, 0, 1, 0)
+    l.BackgroundTransparency = 1
+    l.TextColor3 = Color3.fromRGB(255, 200, 200)
+    l.Text = "Obsidian failed to load!\nTry again later."
+    l.TextSize = 16
+    l.Font = Enum.Font.GothamBold
+    return
+end
+
+-- // === SERVICES ===
+local Players      = game:GetService("Players")
+local Workspace    = game:GetService("Workspace")
+local RunService   = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UIS          = game:GetService("UserInputService")
+local LP           = Players.LocalPlayer
+
+-- // === CHARACTER ===
+local Character, Humanoid, HRP, Config, CombatMode, CurrentCombo, NoBlock, Events
+
+local function RefreshCharacter(char)
+    Character = char
+    Humanoid  = char:WaitForChild("Humanoid")
+    HRP       = char:WaitForChild("HumanoidRootPart")
+    Config    = char:FindFirstChild("Config")
+    if Config then
+        CombatMode   = Config:FindFirstChild("CombatMode")
+        CurrentCombo = Config:FindFirstChild("CurrentCombo")
+        NoBlock      = Config:FindFirstChild("NoBlock")
+    end
+    Events = nil
+    pcall(function()
+        for _, s in ipairs(LP.PlayerScripts:GetDescendants()) do
+            if s.Name == "Events" and s:FindFirstChild("LightAttack") then
+                Events = s break
+            end
+        end
+    end)
+    if not Events then
+        pcall(function()
+            for _, s in ipairs(char:GetDescendants()) do
+                if s.Name == "Events" and s:FindFirstChild("LightAttack") then
+                    Events = s break
+                end
+            end
+        end)
+    end
+end
+
+RefreshCharacter(LP.Character or LP.CharacterAdded:Wait())
+LP.CharacterAdded:Connect(RefreshCharacter)
+
+-- // === ATTACK ANIMATIONS ===
+local AttackAnimations = {}
+pcall(function()
+    for _, s in ipairs(LP.PlayerScripts:GetDescendants()) do
+        if s.Name == "Attacks" then
+            for i = 1, 5 do
+                local anim = s:FindFirstChild("Attack" .. i)
+                if anim then AttackAnimations[i] = Humanoid:LoadAnimation(anim) end
+            end
+            break
+        end
+    end
+end)
+
+-- // === SETTINGS ===
+getgenv().WolfSettings = {
+    QuestPos           = Vector3.new(12.122, 1875.085, 696.367),
+    QuestNPCName       = nil,
+    ClickDistance      = 50,
+    WolfDistance       = 200,
+    WolfKeyword        = "wolf",
+    NPCFolderName      = "",
+    AttackDistance     = 15,
+    AttackCooldown     = 0.35,
+    AutoBlockEnabled   = false,
+    AutoEquipWeapon    = true,
+    ShowESP            = false,
+    ESPDistance        = 500,
+    InstaHitboxSize    = 50,
+    NearestMobEnabled  = false,
+    NearestMobDistance = 300,
+    NearestMobTarget   = "ALL",
+    WolfFarmEnabled    = false,
+    WolfFarmSwings     = 2,
+    WolfFarmUseTween   = false,
+    WolfFarmTweenTime  = 0.3,
+    WolfFarmSwingDelay = 0.4,
+    WolfFarmAutoQuest  = false,
+    WolfPositionMode      = "Above",
+    WolfPositionOffset    = 6,
+    WolfPlatformY         = nil,
+    NearestPositionMode   = "Above",
+    NearestPositionOffset = 6,
+    NearestPlatformY      = nil,
+    InstaKillSwings    = 5,
+    InstaKillDelay     = 0.1,
+    MobAIBreakerEnabled = false,
+    KillAuraEnabled    = false,
+    KillAuraRadius     = 30,
+    KillAuraDelay      = 0.3,
+    AutoComboEnabled   = false,
+    AutoComboPattern   = "LLLH",
+    AutoComboDelay     = 0.25,
+    AntiKnockbackEnabled = false,
+    SpeedHackEnabled   = false,
+    SpeedMultiplier    = 2,
+    InfJumpEnabled     = false,
+    NoclipEnabled      = false,
+    CamLockEnabled     = false,
+    CamLockDistance    = 100,
+    StickyMode         = false,
+    StickyTarget       = nil,
+    StickyScope        = "wolf",
+}
+local S = getgenv().WolfSettings
+
+getgenv().WolfFarmRunning = false
+
+-- // === HELPERS ===
+local function GetCharacter() return LP.Character end
+local function GetHRP()
+    local c = GetCharacter()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function GetHumanoid()
+    local c = GetCharacter()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function GetDistance(a, b) return (a - b).Magnitude end
+
+-- // === POSITION SYSTEM ===
+local function GetPlacementCFrame(mobPos, mobPart, mode, offset, platformY)
+    local myPos, lookAt = mobPos, mobPos
+
+    if mode == "Above" then
+        local y = platformY or (mobPos.Y + offset)
+        myPos = Vector3.new(mobPos.X, y, mobPos.Z)
+        return CFrame.new(myPos, mobPos + Vector3.new(0.01, 0, 0))
+    elseif mode == "Below" then
+        myPos = Vector3.new(mobPos.X, mobPos.Y - offset, mobPos.Z)
+    elseif mode == "Front" then
+        local lv = (mobPart and mobPart.CFrame.LookVector) or Vector3.new(0,0,1)
+        myPos = mobPos + lv * offset
+    elseif mode == "Back" then
+        local lv = (mobPart and mobPart.CFrame.LookVector) or Vector3.new(0,0,1)
+        myPos = mobPos - lv * offset
+    elseif mode == "Left" then
+        local rv = (mobPart and mobPart.CFrame.RightVector) or Vector3.new(1,0,0)
+        myPos = mobPos - rv * offset
+    elseif mode == "Right" then
+        local rv = (mobPart and mobPart.CFrame.RightVector) or Vector3.new(1,0,0)
+        myPos = mobPos + rv * offset
+    end
+
+    if (myPos - lookAt).Magnitude < 0.1 then
+        myPos = myPos + Vector3.new(0, 1, 0)
+    end
+    return CFrame.lookAt(myPos, lookAt)
+end
+
+local function FreezeVelocity()
+    local hrp = GetHRP()
+    if not hrp then return end
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end)
+end
+
+local function PlaceAtMob(mobPosOrPart, useTween, scope)
+    local hrp = GetHRP()
+    if not hrp then return end
+    local mobPos, mobPart
+    if typeof(mobPosOrPart) == "Vector3" then
+        mobPos = mobPosOrPart
+    elseif typeof(mobPosOrPart) == "Instance" and mobPosOrPart:IsA("BasePart") then
+        mobPos  = mobPosOrPart.Position
+        mobPart = mobPosOrPart
+    else return end
+
+    local mode, offset, platformY
+    if scope == "nearest" then
+        mode      = S.NearestPositionMode
+        offset    = S.NearestPositionOffset
+        platformY = S.NearestPlatformY
+    else
+        mode      = S.WolfPositionMode
+        offset    = S.WolfPositionOffset
+        platformY = S.WolfPlatformY
+    end
+
+    local dest = GetPlacementCFrame(mobPos, mobPart, mode, offset, platformY)
+    if not dest then return end
+    if useTween then
+        local tw = TweenService:Create(hrp, TweenInfo.new(S.WolfFarmTweenTime, Enum.EasingStyle.Linear), {CFrame = dest})
+        tw:Play(); tw.Completed:Wait()
+    else
+        hrp.CFrame = dest
+        FreezeVelocity()
+    end
+end
+
+-- === STICKY LOOP ===
+RunService.Heartbeat:Connect(function()
+    if not S.StickyMode then return end
+    if not S.StickyTarget then return end
+    local target = S.StickyTarget
+    if not target.Part or not target.Part.Parent then
+        S.StickyTarget = nil
+        return
+    end
+    if target.Hum and target.Hum.Health <= 0 then
+        S.StickyTarget = nil
+        return
+    end
+    local hrp = GetHRP()
+    if not hrp then return end
+
+    local mode, offset, platformY
+    if S.StickyScope == "nearest" then
+        mode      = S.NearestPositionMode
+        offset    = S.NearestPositionOffset
+        platformY = S.NearestPlatformY
+    else
+        mode      = S.WolfPositionMode
+        offset    = S.WolfPositionOffset
+        platformY = S.WolfPlatformY
+    end
+
+    local dest = GetPlacementCFrame(target.Part.Position, target.Part, mode, offset, platformY)
+    if dest then
+        hrp.CFrame = dest
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end
+end)
+
+-- // === EQUIP WEAPON ===
+local function EquipWeapon()
+    local char = GetCharacter()
+    if not char then return end
+    if char:FindFirstChildOfClass("Tool") then return end
+    local client = char:FindFirstChild("Client")
+    if not client then return end
+    local ev  = client:FindFirstChild("Events")
+    if not ev then return end
+    local act = ev:FindFirstChild("ActivateWeapon")
+    if not act then return end
+    pcall(function()
+        if act:IsA("RemoteEvent") then act:FireServer()
+        elseif act:IsA("BindableEvent") then act:Fire() end
+    end)
+end
+
+-- // === CHECKS ===
+local function IsStunned()
+    if not Config then return false end
+    local stunned = false
+    pcall(function()
+        stunned = Config.Stunned.Value == true
+            or Config.FullyStunned.Value == true
+            or Config.ToggleRagdoll.Value == true
+            or (Character and Character:FindFirstChild("TemporaryStun") ~= nil)
+    end)
+    return stunned
+end
+
+local function IsBlocking()
+    if not Config then return false end
+    local blocking = false
+    pcall(function() blocking = Config.Blocking.Value == true end)
+    return blocking
+end
+
+local function IsAttackReady()
+    if not Config or not CombatMode then return false end
+    local ready = false
+    pcall(function()
+        ready = Config.AttackCooldown.Value  == false
+            and Config.CAttackCooldown.Value == false
+            and Config.NoAttack.Value        == false
+            and not IsStunned()
+            and CombatMode.Value == true
+            and Character ~= nil
+            and Character:FindFirstChild("Safe Mode") == nil
+            and Humanoid ~= nil
+            and Humanoid.Health > 0
+    end)
+    return ready
+end
+
+-- // === COMBAT ===
+local function ResetDebounces()
+    if not Config then return end
+    task.spawn(function()
+        if CurrentCombo and CurrentCombo.Value > 5 then
+            pcall(function() Config.CanBlock.Value = true end)
+            task.wait(3)
+        end
+        task.wait(0.0025)
+        pcall(function() Config.CAttackCooldown.Value = false end)
+        pcall(function() Config.CanBlock.Value = true end)
+    end)
+end
+
+local function Swing()
+    if not IsAttackReady() then return false end
+    if not CurrentCombo then return false end
+    local anim = AttackAnimations[CurrentCombo.Value]
+    if not anim then
+        if Events and Events:FindFirstChild("LightAttack") then
+            pcall(function() Events.LightAttack:FireServer("SecretCode22") end)
+            return true
+        end
+        return false
+    end
+    pcall(function() Config.Dashing.Value = false end)
+    pcall(function() Config.CAttackCooldown.Value = true end)
+    if NoBlock then pcall(function() NoBlock.Value = true end) end
+    anim:Play()
+    anim:AdjustSpeed(1.5)
+    task.delay(anim.Length / 1.5 * 0.7 - 0.4, function()
+        if Events and Events:FindFirstChild("LightAttack") then
+            pcall(function() Events.LightAttack:FireServer("SecretCode22") end)
+        end
+    end)
+    local conn
+    conn = anim.Stopped:Connect(function()
+        if not Character then conn:Disconnect() return end
+        repeat task.wait() until Character:FindFirstChild("Hitbox") == nil
+        if NoBlock then pcall(function() NoBlock.Value = false end) end
+        ResetDebounces()
+        conn:Disconnect()
+    end)
+    return true
+end
+
+local function HeavySwing()
+    if not IsAttackReady() then return false end
+    if Events and Events:FindFirstChild("HeavyAttack") then
+        pcall(function() Events.HeavyAttack:FireServer("SecretCode22") end)
+        return true
+    end
+    return Swing()
+end
+
+local function ExecuteCombo(pattern)
+    for i = 1, #pattern do
+        if not S.AutoComboEnabled then break end
+        local ch = pattern:sub(i, i):upper()
+        if ch == "L" then
+            if IsAttackReady() then Swing() end
+        elseif ch == "H" then
+            if IsAttackReady() then HeavySwing() end
+        end
+        task.wait(S.AutoComboDelay)
+    end
+end
+
+local function StartBlock()
+    if not Events then return end
+    if IsStunned() or IsBlocking() then return end
+    if not CombatMode or not CombatMode.Value then return end
+    if NoBlock and NoBlock.Value then return end
+    pcall(function() Events.Block:InvokeServer() end)
+end
+
+local function StopBlock()
+    if not Config then return end
+    pcall(function() Config.Blocking.Value = false end)
+    if Events then pcall(function() Events.StopBlocking:InvokeServer() end) end
+end
+
+-- // === MOB SEARCH ===
+local function FindNPCFolder()
+    if S.NPCFolderName ~= "" then
+        local f = Workspace:FindFirstChild(S.NPCFolderName)
+        if f then return f end
+    end
+    for _, n in ipairs({"NPCS","NPCs","Npcs","Mobs","Enemies","Monsters","Entities"}) do
+        local f = Workspace:FindFirstChild(n)
+        if f then return f end
+    end
+    return nil
+end
+
+local function GetAliveWolves()
+    local list = {}
+    local keyword = S.WolfKeyword:lower()
+    local folder = FindNPCFolder()
+    local function Scan(parent)
+        for _, obj in ipairs(parent:GetChildren()) do
+            if obj:IsA("Model") and obj.Name:lower():find(keyword) then
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local part = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
+                    if part then table.insert(list, {Model=obj, Hum=hum, Part=part}) end
+                end
+            elseif obj:IsA("Folder") or obj:IsA("Model") then Scan(obj) end
+        end
+    end
+    if folder then Scan(folder) else Scan(Workspace) end
+    return list
+end
+
+local function GetSortedWolves()
+    local hrp = GetHRP()
+    if not hrp then return {} end
+    local list = GetAliveWolves()
+    table.sort(list, function(a, b)
+        return GetDistance(hrp.Position, a.Part.Position) < GetDistance(hrp.Position, b.Part.Position)
+    end)
+    return list
+end
+
+local function GetClosestWolf()
+    local hrp = GetHRP()
+    if not hrp then return nil, math.huge end
+    local closest, best = nil, math.huge
+    for _, w in ipairs(GetAliveWolves()) do
+        local d = GetDistance(hrp.Position, w.Part.Position)
+        if d < best then best = d; closest = w end
+    end
+    return closest, best
+end
+
+local function GetAllAliveMobs()
+    local list = {}
+    local folder = FindNPCFolder()
+    local function Scan(parent)
+        for _, obj in ipairs(parent:GetChildren()) do
+            if obj:IsA("Model") then
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    local isPlayer = false
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p.Character == obj then isPlayer = true break end
+                    end
+                    if not isPlayer then
+                        local part = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
+                        if part then table.insert(list, {Model=obj, Hum=hum, Part=part}) end
+                    end
+                end
+            elseif obj:IsA("Folder") then Scan(obj) end
+        end
+    end
+    if folder then Scan(folder) else Scan(Workspace) end
+    return list
+end
+
+local function GetMobNames()
+    local names = {"ALL"}
+    local seen = {}
+    for _, mob in ipairs(GetAllAliveMobs()) do
+        if not seen[mob.Model.Name] then
+            seen[mob.Model.Name] = true
+            table.insert(names, mob.Model.Name)
+        end
+    end
+    return names
+end
+
+local function GetClosestFilteredMob()
+    local hrp = GetHRP()
+    if not hrp then return nil end
+    local closest, best = nil, math.huge
+    for _, mob in ipairs(GetAllAliveMobs()) do
+        local nameOk = (S.NearestMobTarget == "ALL" or mob.Model.Name == S.NearestMobTarget)
+        local d = GetDistance(hrp.Position, mob.Part.Position)
+        if nameOk and d < best then best = d; closest = mob end
+    end
+    return closest
+end
+
+local function GetClosestMob()
+    local hrp = GetHRP()
+    if not hrp then return nil end
+    local closest, best = nil, math.huge
+    for _, mob in ipairs(GetAllAliveMobs()) do
+        local d = GetDistance(hrp.Position, mob.Part.Position)
+        if d < best then best = d; closest = mob end
+    end
+    return closest
+end
+
+local function GetMobsInRadius(radius, maxCount)
+    local hrp = GetHRP()
+    if not hrp then return {} end
+    local result = {}
+    local all = GetAllAliveMobs()
+    table.sort(all, function(a, b)
+        return GetDistance(hrp.Position, a.Part.Position) < GetDistance(hrp.Position, b.Part.Position)
+    end)
+    for _, mob in ipairs(all) do
+        if GetDistance(hrp.Position, mob.Part.Position) <= radius then
+            table.insert(result, mob)
+            if maxCount and #result >= maxCount then break end
+        end
+    end
+    return result
+end
+
+-- // === QUEST ===
+local function TakeQuest()
+    local hrp = GetHRP()
+    if not hrp then Library:Notify('No character', 3) return end
+    hrp.CFrame = CFrame.new(S.QuestPos + Vector3.new(0, S.WolfPositionOffset, 0))
+    task.wait(0.6)
+    hrp = GetHRP()
+    if not hrp then return end
+    local nearest, bestD = nil, S.ClickDistance
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ClickDetector") then
+            local parent = obj.Parent
+            local pos
+            if parent:IsA("BasePart") then pos = parent.Position
+            elseif parent:IsA("Model") then pcall(function() pos = parent:GetPivot().Position end) end
+            if pos then
+                local allowed = not S.QuestNPCName or parent.Name == S.QuestNPCName or (parent.Parent and parent.Parent.Name == S.QuestNPCName)
+                if allowed then
+                    local d = GetDistance(hrp.Position, pos)
+                    if d < bestD then bestD = d; nearest = obj end
+                end
+            end
+        end
+    end
+    if nearest and fireclickdetector then
+        fireclickdetector(nearest); Library:Notify('Quest taken!', 3)
+    else
+        Library:Notify('ClickDetector not found', 5)
+    end
+end
+
+-- // === ESP ===
+local ESPObjects = {}
+local function ClearESP()
+    for _, v in pairs(ESPObjects) do
+        pcall(function() if v and v.Parent then v:Destroy() end end)
+    end
+    ESPObjects = {}
+end
+
+local function UpdateESP()
+    ClearESP()
+    if not S.ShowESP then return end
+    local hrp = GetHRP()
+    if not hrp then return end
+    for _, w in ipairs(GetAllAliveMobs()) do
+        local dist = GetDistance(hrp.Position, w.Part.Position)
+        if dist <= S.ESPDistance then
+            pcall(function()
+                local bb = Instance.new("BillboardGui")
+                bb.Size = UDim2.new(0, 140, 0, 55)
+                bb.AlwaysOnTop = true
+                bb.StudsOffset = Vector3.new(0, 4, 0)
+                bb.Adornee = w.Part
+                bb.Parent = w.Part
+
+                local lbl = Instance.new("TextLabel")
+                lbl.Size = UDim2.new(1, 0, 0.6, 0)
+                lbl.BackgroundTransparency = 1
+                lbl.Text = w.Model.Name .. "\nHP: " .. math.floor(w.Hum.Health) .. "/" .. math.floor(w.Hum.MaxHealth) .. " [" .. math.floor(dist) .. "m]"
+                lbl.TextColor3 = Color3.fromRGB(255, 80, 80)
+                lbl.TextStrokeTransparency = 0
+                lbl.Font = Enum.Font.GothamBold
+                lbl.TextSize = 13
+                lbl.Parent = bb
+
+                local barBg = Instance.new("Frame")
+                barBg.Size = UDim2.new(0.8, 0, 0, 4)
+                barBg.Position = UDim2.new(0.1, 0, 0.75, 0)
+                barBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+                barBg.BorderSizePixel = 0
+                barBg.Parent = bb
+
+                local hpPct = math.clamp(w.Hum.Health / w.Hum.MaxHealth, 0, 1)
+                local barFill = Instance.new("Frame")
+                barFill.Size = UDim2.new(hpPct, 0, 1, 0)
+                barFill.BackgroundColor3 = hpPct > 0.5 and Color3.fromRGB(0, 255, 0) or (hpPct > 0.25 and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 0, 0))
+                barFill.BorderSizePixel = 0
+                barFill.Parent = barBg
+
+                table.insert(ESPObjects, bb)
+            end)
+        end
+    end
+end
+
+-- // === EXPLOITS ===
+local function VoidMob(mobData)
+    if not mobData or not mobData.Model then return end
+    local model = mobData.Model
+    local hum   = mobData.Hum
+
+    task.spawn(function()
+        pcall(function()
+            for i = 1, 30 do
+                if not hum or not hum.Parent then break end
+                pcall(function()
+                    hum:ChangeState(Enum.HumanoidStateType.Physics)
+                    hum:ChangeState(Enum.HumanoidStateType.Ragdoll)
+                    hum:ChangeState(Enum.HumanoidStateType.FallingDown)
+                end)
+                task.wait()
+            end
+        end)
+
+        pcall(function()
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
+                    p.Massless = true
+                    p.AssemblyLinearVelocity = Vector3.new(0, 5000, 0)
+                end
+            end
+        end)
+
+        task.wait(0.2)
+
+        pcall(function()
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CFrame = CFrame.new(p.Position.X, -10000, p.Position.Z)
+                end
+            end
+        end)
+    end)
+
+    Library:Notify("Void: " .. model.Name, 3)
+end
+
+local ExpandedParts = {}
+
+local function ExpandHitbox(mobData, size)
+    if not mobData or not mobData.Model then return end
+    local model = mobData.Model
+    pcall(function()
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if not ExpandedParts[part] then
+                    ExpandedParts[part] = {
+                        Size         = part.Size,
+                        Transparency = part.Transparency,
+                        CanCollide   = part.CanCollide,
+                        Massless     = part.Massless,
+                    }
+                end
+                part.Size         = Vector3.new(size, size, size)
+                part.Transparency = 0.6
+                part.CanCollide   = false
+                part.Massless     = true
+            end
+        end
+    end)
+    Library:Notify("Hitbox expanded: " .. model.Name, 3)
+end
+
+local function ResetHitboxes()
+    local count = 0
+    for part, orig in pairs(ExpandedParts) do
+        pcall(function()
+            if part and part.Parent then
+                part.Size         = orig.Size
+                part.Transparency = orig.Transparency
+                part.CanCollide   = orig.CanCollide
+                part.Massless     = orig.Massless
+                count = count + 1
+            end
+        end)
+    end
+    ExpandedParts = {}
+    Library:Notify("Reset " .. count .. " parts", 3)
+end
+
+local function TryInstaKill()
+    local mob = GetClosestMob()
+    if not mob then Library:Notify("No mobs", 3) return end
+
+    task.spawn(function()
+        EquipWeapon()
+        task.wait(0.1)
+
+        local hrp = GetHRP()
+        if hrp and mob.Part and mob.Part.Parent then
+            hrp.CFrame = mob.Part.CFrame * CFrame.new(0, 0, -2)
+        end
+        task.wait(0.1)
+
+        for i = 1, S.InstaKillSwings do
+            if not mob.Part or not mob.Part.Parent then break end
+            if mob.Hum.Health <= 0 then break end
+            hrp = GetHRP()
+            if hrp and mob.Part and mob.Part.Parent then
+                hrp.CFrame = mob.Part.CFrame * CFrame.new(0, 0, -2)
+            end
+            if IsAttackReady() then pcall(Swing) end
+            task.wait(S.InstaKillDelay)
+        end
+
+        if mob.Hum and mob.Hum.Parent and mob.Hum.Health > 0 then
+            task.wait(0.3)
+            if mob.Hum.Health > 0 then
+                Library:Notify("Mob alive, using Void...", 2)
+                VoidMob(mob)
+            end
+        end
+
+        Library:Notify("InstaKill done: " .. mob.Model.Name, 3)
+    end)
+end
+
+-- // === KILL AURA ===
+task.spawn(function()
+    while task.wait(0.1) do
+        if not S.KillAuraEnabled then continue end
+        local hrp = GetHRP()
+        if not hrp then continue end
+        if S.AutoEquipWeapon then EquipWeapon() end
+
+        local mobs = GetMobsInRadius(S.KillAuraRadius, 10)
+        for _, mob in ipairs(mobs) do
+            if not S.KillAuraEnabled then break end
+            if mob.Part and mob.Part.Parent and mob.Hum.Health > 0 then
+                local origCF = hrp.CFrame
+                hrp.CFrame = mob.Part.CFrame * CFrame.new(0, 0, -2)
+                if IsAttackReady() then pcall(Swing) end
+                task.wait(S.KillAuraDelay * 0.5)
+                hrp.CFrame = origCF
+                task.wait(S.KillAuraDelay * 0.5)
+            end
+        end
+    end
+end)
+
+-- === AUTO COMBO ===
+task.spawn(function()
+    while task.wait(0.2) do
+        if not S.AutoComboEnabled then continue end
+        local mob = GetClosestMob()
+        if not mob then continue end
+        local hrp = GetHRP()
+        if not hrp then continue end
+        if GetDistance(hrp.Position, mob.Part.Position) > S.AttackDistance then continue end
+        if S.AutoEquipWeapon then EquipWeapon() end
+        ExecuteCombo(S.AutoComboPattern)
+    end
+end)
+
+-- === ANTI KNOCKBACK ===
+local AntiKBConn = nil
+local function StartAntiKB()
+    if AntiKBConn then return end
+    AntiKBConn = RunService.Heartbeat:Connect(function()
+        if not S.AntiKnockbackEnabled then return end
+        local hrp = GetHRP()
+        if not hrp then return end
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.new(0, hrp.AssemblyLinearVelocity.Y, 0)
+            for _, bv in ipairs(hrp:GetChildren()) do
+                if bv:IsA("BodyVelocity") or bv:IsA("BodyForce") or bv:IsA("LinearVelocity") then
+                    bv:Destroy()
+                end
+            end
+        end)
+    end)
+end
+
+local function StopAntiKB()
+    if AntiKBConn then AntiKBConn:Disconnect(); AntiKBConn = nil end
+end
+
+-- === SPEED HACK ===
+local OrigWalkSpeed = 16
+local SpeedConn = nil
+
+local function StartSpeed()
+    if SpeedConn then return end
+    local hum = GetHumanoid()
+    if hum then OrigWalkSpeed = hum.WalkSpeed end
+    SpeedConn = RunService.Heartbeat:Connect(function()
+        if not S.SpeedHackEnabled then return end
+        local hum = GetHumanoid()
+        if hum then hum.WalkSpeed = OrigWalkSpeed * S.SpeedMultiplier end
+    end)
+end
+
+local function StopSpeed()
+    if SpeedConn then SpeedConn:Disconnect(); SpeedConn = nil end
+    local hum = GetHumanoid()
+    if hum then hum.WalkSpeed = OrigWalkSpeed end
+end
+
+-- === INFINITE JUMP ===
+local InfJumpConn = nil
+local function StartInfJump()
+    if InfJumpConn then return end
+    InfJumpConn = UIS.JumpRequest:Connect(function()
+        if not S.InfJumpEnabled then return end
+        local hum = GetHumanoid()
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end)
+end
+
+local function StopInfJump()
+    if InfJumpConn then InfJumpConn:Disconnect(); InfJumpConn = nil end
+end
+
+-- === NOCLIP ===
+local NoclipConn = nil
+local function StartNoclip()
+    if NoclipConn then return end
+    NoclipConn = RunService.Stepped:Connect(function()
+        if not S.NoclipEnabled then return end
+        local char = GetCharacter()
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end)
+end
+
+local function StopNoclip()
+    if NoclipConn then NoclipConn:Disconnect(); NoclipConn = nil end
+    local char = GetCharacter()
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and (part.Name == "HumanoidRootPart" or part.Name == "Head" or part.Name:find("Torso") or part.Name:find("Leg") or part.Name:find("Arm")) then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- === MOB AI BREAKER ===
+local AIBreakerConn = nil
+
+local function StartAIBreaker()
+    if AIBreakerConn then return end
+    AIBreakerConn = RunService.Heartbeat:Connect(function()
+        if not S.MobAIBreakerEnabled then return end
+        for _, mob in ipairs(GetAllAliveMobs()) do
+            pcall(function()
+                local hum = mob.Hum
+                if hum then
+                    hum.WalkSpeed = 0
+                    hum.JumpPower = 0
+                    hum.JumpHeight = 0
+                    if mob.Part then hum:MoveTo(mob.Part.Position) end
+                end
+            end)
+        end
+    end)
+end
+
+local function StopAIBreaker()
+    if AIBreakerConn then AIBreakerConn:Disconnect(); AIBreakerConn = nil end
+    for _, mob in ipairs(GetAllAliveMobs()) do
+        pcall(function()
+            if mob.Hum then
+                mob.Hum.WalkSpeed = 16
+                mob.Hum.JumpPower = 50
+                mob.Hum.JumpHeight = 7.2
+            end
+        end)
+    end
+end
+
+-- === CAMERA LOCK ===
+local CamLockConn = nil
+local function StartCamLock()
+    if CamLockConn then return end
+    local cam = Workspace.CurrentCamera
+    CamLockConn = RunService.RenderStepped:Connect(function()
+        if not S.CamLockEnabled then return end
+        local mob = GetClosestMob()
+        if not mob or not mob.Part or not mob.Part.Parent then return end
+        local hrp = GetHRP()
+        if not hrp then return end
+        if GetDistance(hrp.Position, mob.Part.Position) > S.CamLockDistance then return end
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, mob.Part.Position)
+    end)
+end
+
+local function StopCamLock()
+    if CamLockConn then CamLockConn:Disconnect(); CamLockConn = nil end
+end
+
+-- // === WOLF FARM ===
+local function WaitForAttackReady(timeout)
+    local t = tick()
+    while not IsAttackReady() do
+        if tick() - t > timeout then return false end
+        task.wait(0.05)
+    end
+    return true
+end
+
+local function WolfFarmLoop()
+    while getgenv().WolfFarmRunning do
+        if S.AutoEquipWeapon then EquipWeapon() end
+        local wolves = GetSortedWolves()
+        if #wolves == 0 then
+            S.StickyTarget = nil
+            if S.WolfFarmAutoQuest then
+                task.spawn(function() TakeQuest(); task.wait(2) end)
+            end
+            task.wait(0.5)
+            continue
+        end
+        for _, wolf in ipairs(wolves) do
+            if not getgenv().WolfFarmRunning then S.StickyTarget = nil; return end
+            if not wolf.Part or not wolf.Part.Parent then continue end
+            if wolf.Hum.Health <= 0 then continue end
+
+            S.StickyScope = "wolf"
+            S.StickyTarget = wolf
+            task.wait(0.15)
+
+            local hit = 0
+            local attempts = 0
+            while hit < S.WolfFarmSwings and getgenv().WolfFarmRunning do
+                attempts += 1
+                if attempts > 40 then break end
+                if not (wolf.Part and wolf.Part.Parent and wolf.Hum.Health > 0) then break end
+                if WaitForAttackReady(1.5) then
+                    pcall(Swing); hit += 1
+                end
+                task.wait(S.WolfFarmSwingDelay)
+            end
+            task.wait(0.08)
+        end
+        task.wait(0.05)
+    end
+    S.StickyTarget = nil
+end
+
+local function StartWolfFarm()
+    if getgenv().WolfFarmRunning then return end
+    getgenv().WolfFarmRunning = true
+    S.StickyMode = true
+    task.spawn(WolfFarmLoop)
+    Library:Notify("Wolf Farm: STARTED", 3)
+end
+
+local function StopWolfFarm()
+    getgenv().WolfFarmRunning = false
+    S.StickyTarget = nil
+    if not S.NearestMobEnabled then S.StickyMode = false end
+    Library:Notify("Wolf Farm: STOPPED", 3)
+end
+
+-- // === NEAREST MOB FARM ===
+local LastNearestAttack = 0
+task.spawn(function()
+    while task.wait(0.05) do
+        if not S.NearestMobEnabled then
+            if not getgenv().WolfFarmRunning and S.StickyScope == "nearest" then
+                S.StickyTarget = nil
+            end
+            continue
+        end
+        if getgenv().WolfFarmRunning then continue end
+        local hrp = GetHRP(); if not hrp then continue end
+        if S.AutoEquipWeapon then EquipWeapon() end
+        local mob = GetClosestFilteredMob()
+        if not mob or not mob.Part or not mob.Part.Parent then
+            S.StickyTarget = nil
+            continue
+        end
+
+        S.StickyMode = true
+        S.StickyScope = "nearest"
+        S.StickyTarget = mob
+
+        local now = tick()
+        if now - LastNearestAttack >= S.AttackCooldown then
+            LastNearestAttack = now
+            pcall(Swing)
+        end
+    end
+end)
+
+-- // === AUTO BLOCK ===
+task.spawn(function()
+    while task.wait(0.15) do
+        if not S.AutoBlockEnabled then continue end
+        local wolf, d = GetClosestWolf()
+        if wolf and d <= S.AttackDistance * 1.5 then
+            if Config and Config.CAttackCooldown.Value == false then
+                pcall(StartBlock); task.wait(0.3); pcall(StopBlock)
+            end
+        end
+    end
+end)
+
+-- // === ESP LOOP ===
+task.spawn(function()
+    while task.wait(1) do pcall(UpdateESP) end
+end)
+
+-- // ================================================================
+-- // === UI (OBSIDIAN) ==============================================
+-- // ================================================================
+local Window = Library:CreateWindow({
+    Title    = 'NZL Studio',
+    Footer   = 'Obsidian Edition',
+    Center   = true,
+    AutoShow = true,
+})
+
+local Tabs = {
+    Farm     = Window:AddTab('Farm', 'sword'),
+    Combat   = Window:AddTab('Combat', 'swords'),
+    Hacks    = Window:AddTab('Hacks', 'wrench'),
+    Settings = Window:AddTab('Settings', 'settings'),
+    UI       = Window:AddTab('UI', 'monitor'),
+}
+
+-- ==================== FARM (Wolf + Nearest вместе) ====================
+local FL = Tabs.Farm:AddLeftGroupbox('Wolf Farm')
+local FR = Tabs.Farm:AddRightGroupbox('Nearest Mob Farm')
+
+-- LEFT: Wolf Farm
+FL:AddToggle('WolfFarmToggle', { Text='Wolf Farm', Default=false }):OnChanged(function(v)
+    if v then StartWolfFarm() else StopWolfFarm() end
+end)
+FL:AddToggle('WolfAutoQuest', { Text='Auto-quest', Default=false }):OnChanged(function(v)
+    S.WolfFarmAutoQuest = v
+end)
+FL:AddButton({ Text='TP to closest wolf', Func=function()
+    local w = GetClosestWolf()
+    if w then PlaceAtMob(w.Part, false, "wolf"); Library:Notify('TP: '..w.Model.Name, 2)
+    else Library:Notify('No wolves', 3) end
+end })
+FL:AddButton({ Text='Take quest', Func=function() task.spawn(TakeQuest) end })
+FL:AddButton({ Text='TP to quest', Func=function()
+    local hrp = GetHRP()
+    if hrp then hrp.CFrame = CFrame.new(S.QuestPos + Vector3.new(0, S.WolfPositionOffset, 0)); Library:Notify('TP',2) end
+end })
+FL:AddDivider()
+FL:AddLabel('Position:')
+local WolfPosDropdown = FL:AddDropdown('WolfPosMode', {
+    Text='Mode', Default='Above',
+    Values={'Above', 'Below', 'Front', 'Back', 'Left', 'Right'},
+    Multi=false,
+})
+WolfPosDropdown:OnChanged(function(v) S.WolfPositionMode = v end)
+FL:AddSlider('WolfPosOffset', { Text='Distance', Default=6, Min=1, Max=30, Rounding=1, Callback=function(v) S.WolfPositionOffset=v end })
+FL:AddButton({ Text='Lock Y here', Func=function()
+    local hrp = GetHRP()
+    if hrp then S.WolfPlatformY = hrp.Position.Y; Library:Notify('Y locked', 3) end
+end })
+FL:AddButton({ Text='Unlock Y', Func=function() S.WolfPlatformY = nil; Library:Notify('Unlocked', 2) end })
+FL:AddDivider()
+FL:AddSlider('WolfSwings',     { Text='Swings/wolf', Default=2, Min=1, Max=15, Rounding=0, Callback=function(v) S.WolfFarmSwings=v end })
+FL:AddSlider('WolfSwingDelay', { Text='Swing delay', Default=0.4, Min=0.1, Max=2, Rounding=2, Callback=function(v) S.WolfFarmSwingDelay=v end })
+
+-- RIGHT: Nearest Mob
+FR:AddToggle('NearestMobFarm', { Text='Farm Nearest', Default=false }):OnChanged(function(v)
+    S.NearestMobEnabled = v
+    if v then S.StickyMode = true end
+    Library:Notify(v and 'ON' or 'OFF', 2)
+end)
+local MobDropdown = FR:AddDropdown('MobTargetDropdown', {
+    Text='Target', Default='ALL', Values={'ALL'}, Multi=false,
+})
+MobDropdown:OnChanged(function(v) S.NearestMobTarget = v end)
+FR:AddButton({ Text='Refresh list', Func=function()
+    local names = GetMobNames()
+    MobDropdown:SetValues(names); MobDropdown:SetValue('ALL')
+    S.NearestMobTarget = 'ALL'
+    Library:Notify('Found '..#names..' types', 3)
+end })
+FR:AddButton({ Text='Show mobs nearby', Func=function()
+    local hrp = GetHRP(); if not hrp then return end
+    local nearby = {}
+    for _, mob in ipairs(GetAllAliveMobs()) do
+        local d = GetDistance(hrp.Position, mob.Part.Position)
+        if d <= S.NearestMobDistance then
+            table.insert(nearby, mob.Model.Name.." ("..math.floor(d)..")")
+        end
+    end
+    if #nearby == 0 then Library:Notify('No mobs', 3) return end
+    local msg = "Found "..#nearby.."\n"
+    for i = 1, math.min(8, #nearby) do msg = msg..nearby[i].."\n" end
+    Library:Notify(msg, 6)
+end })
+FR:AddButton({ Text='TP to target', Func=function()
+    local mob = GetClosestFilteredMob()
+    if mob then PlaceAtMob(mob.Part, false, "nearest"); Library:Notify('TP: '..mob.Model.Name, 2)
+    else Library:Notify('Not found', 3) end
+end })
+FR:AddDivider()
+FR:AddLabel('Position:')
+local NearestPosDropdown = FR:AddDropdown('NearestPosMode', {
+    Text='Mode', Default='Above',
+    Values={'Above', 'Below', 'Front', 'Back', 'Left', 'Right'},
+    Multi=false,
+})
+NearestPosDropdown:OnChanged(function(v) S.NearestPositionMode = v end)
+FR:AddSlider('NearestPosOffset', { Text='Distance', Default=6, Min=1, Max=30, Rounding=1, Callback=function(v) S.NearestPositionOffset=v end })
+FR:AddButton({ Text='Lock Y here', Func=function()
+    local hrp = GetHRP()
+    if hrp then S.NearestPlatformY = hrp.Position.Y; Library:Notify('Y locked', 3) end
+end })
+FR:AddButton({ Text='Unlock Y', Func=function() S.NearestPlatformY = nil; Library:Notify('Unlocked', 2) end })
+FR:AddDivider()
+FR:AddSlider('NearestDist', { Text='Search radius', Default=300, Min=50, Max=3000, Rounding=0, Callback=function(v) S.NearestMobDistance=v end })
+FR:AddSlider('NearestCD',   { Text='Attack CD', Default=0.35, Min=0.05, Max=2, Rounding=2, Callback=function(v) S.AttackCooldown=v end })
+
+-- ==================== COMBAT ====================
+local CL = Tabs.Combat:AddLeftGroupbox('Attack')
+local CR = Tabs.Combat:AddRightGroupbox('Defense & Combo')
+
+CL:AddButton({ Text='Manual swing', Func=function() pcall(Swing) end })
+CL:AddButton({ Text='Heavy swing', Func=function() pcall(HeavySwing) end })
+CL:AddButton({ Text='Equip weapon', Func=function() EquipWeapon() end })
+CL:AddSlider('AttackDist', { Text='Attack dist', Default=15, Min=3, Max=60, Rounding=1, Callback=function(v) S.AttackDistance=v end })
+CL:AddSlider('AttackCD2',  { Text='Attack CD', Default=0.35, Min=0.05, Max=2, Rounding=2, Callback=function(v) S.AttackCooldown=v end })
+CL:AddDivider()
+CL:AddLabel('Kill Aura:')
+CL:AddToggle('KillAuraToggle', { Text='Kill Aura', Default=false }):OnChanged(function(v)
+    S.KillAuraEnabled = v
+end)
+CL:AddSlider('KillAuraRadius', { Text='Aura radius', Default=30, Min=5, Max=100, Rounding=0, Callback=function(v) S.KillAuraRadius=v end })
+CL:AddSlider('KillAuraDelay',  { Text='Aura delay', Default=0.3, Min=0.05, Max=1, Rounding=2, Callback=function(v) S.KillAuraDelay=v end })
+
+CR:AddToggle('AutoBlock', { Text='Auto-block', Default=false }):OnChanged(function(v) S.AutoBlockEnabled=v end)
+CR:AddButton({ Text='Block', Func=function() pcall(StartBlock) end })
+CR:AddButton({ Text='Stop block', Func=function() pcall(StopBlock) end })
+CR:AddDivider()
+CR:AddLabel('Auto Combo:')
+CR:AddToggle('AutoComboToggle', { Text='Auto Combo', Default=false }):OnChanged(function(v)
+    S.AutoComboEnabled = v
+end)
+CR:AddInput('ComboPattern', {
+    Default = 'LLLH',
+    Text = 'Pattern (L/H)',
+    Callback = function(t)
+        local cleaned = t:upper():gsub("[^LH]", "")
+        if cleaned == "" then cleaned = "LLLH" end
+        S.AutoComboPattern = cleaned
+    end
+})
+CR:AddSlider('ComboDelay', { Text='Combo delay', Default=0.25, Min=0.05, Max=1, Rounding=2, Callback=function(v) S.AutoComboDelay=v end })
+
+-- ==================== HACKS (Exploits + Movement вместе) ====================
+local HL = Tabs.Hacks:AddLeftGroupbox('Mob Exploits')
+local HR = Tabs.Hacks:AddRightGroupbox('Movement & Protection')
+
+-- LEFT: Exploits
+HL:AddLabel('Void:')
+HL:AddButton({ Text='Void Nearest', Func=function()
+    local m = GetClosestMob()
+    if m then VoidMob(m) else Library:Notify('No mob',3) end
+end })
+HL:AddButton({ Text='Void ALL', Func=function()
+    local all = GetAllAliveMobs()
+    for _, m in ipairs(all) do task.spawn(function() VoidMob(m) end) end
+    Library:Notify('Voided '..#all, 3)
+end })
+HL:AddDivider()
+HL:AddLabel('Insta Kill:')
+HL:AddButton({ Text='Insta Kill', Func=function() TryInstaKill() end })
+HL:AddSlider('InstaSwings', { Text='Insta swings', Default=5,  Min=1,  Max=20,  Rounding=0, Callback=function(v) S.InstaKillSwings=v end })
+HL:AddSlider('InstaDelay',  { Text='Insta delay',  Default=0.1, Min=0.05, Max=1, Rounding=2, Callback=function(v) S.InstaKillDelay=v end })
+HL:AddDivider()
+HL:AddLabel('Hitbox:')
+HL:AddButton({ Text='Expand Nearest', Func=function()
+    local m = GetClosestMob()
+    if m then ExpandHitbox(m, S.InstaHitboxSize) else Library:Notify('No mob',3) end
+end })
+HL:AddButton({ Text='Expand ALL', Func=function()
+    local all = GetAllAliveMobs()
+    for _, m in ipairs(all) do ExpandHitbox(m, S.InstaHitboxSize) end
+    Library:Notify('Expanded '..#all, 3)
+end })
+HL:AddButton({ Text='Reset Hitboxes', Func=ResetHitboxes })
+HL:AddSlider('HitboxSize',  { Text='Hitbox size',  Default=50, Min=10, Max=500, Rounding=0, Callback=function(v) S.InstaHitboxSize=v end })
+HL:AddDivider()
+HL:AddToggle('AIBreaker', { Text='AI Breaker', Default=false }):OnChanged(function(v)
+    S.MobAIBreakerEnabled = v
+    if v then StartAIBreaker() else StopAIBreaker() end
+end)
+HL:AddDivider()
+HL:AddLabel('Camera Lock:')
+HL:AddToggle('CamLockToggle', { Text='Lock cam on mob', Default=false }):OnChanged(function(v)
+    S.CamLockEnabled = v
+    if v then StartCamLock() else StopCamLock() end
+end)
+HL:AddSlider('CamLockDist', { Text='Lock dist', Default=100, Min=10, Max=500, Rounding=0, Callback=function(v) S.CamLockDistance=v end })
+
+-- RIGHT: Movement & Protection
+HR:AddLabel('Movement:')
+HR:AddToggle('SpeedToggle', { Text='Speed Hack', Default=false }):OnChanged(function(v)
+    S.SpeedHackEnabled = v
+    if v then StartSpeed() else StopSpeed() end
+end)
+HR:AddSlider('SpeedMult', { Text='Speed x', Default=2, Min=1, Max=10, Rounding=1, Callback=function(v) S.SpeedMultiplier=v end })
+HR:AddDivider()
+HR:AddToggle('InfJumpToggle', { Text='Infinite Jump', Default=false }):OnChanged(function(v)
+    S.InfJumpEnabled = v
+    if v then StartInfJump() else StopInfJump() end
+end)
+HR:AddDivider()
+HR:AddToggle('NoclipToggle', { Text='Noclip', Default=false }):OnChanged(function(v)
+    S.NoclipEnabled = v
+    if v then StartNoclip() else StopNoclip() end
+end)
+HR:AddDivider()
+HR:AddLabel('Protection:')
+HR:AddToggle('AntiKBToggle', { Text='Anti-Knockback', Default=false }):OnChanged(function(v)
+    S.AntiKnockbackEnabled = v
+    if v then StartAntiKB() else StopAntiKB() end
+end)
+
+-- ==================== SETTINGS ====================
+local SL = Tabs.Settings:AddLeftGroupbox('General')
+local SR = Tabs.Settings:AddRightGroupbox('ESP')
+
+SL:AddSlider('WD',        { Text='Wolf dist', Default=200, Min=10, Max=3000, Rounding=0, Callback=function(v) S.WolfDistance=v end })
+SL:AddSlider('ClickDist', { Text='Click dist', Default=50, Min=5, Max=200, Rounding=0, Callback=function(v) S.ClickDistance=v end })
+SL:AddToggle('AutoEq',    { Text='Auto-equip', Default=true }):OnChanged(function(v) S.AutoEquipWeapon=v end)
+SL:AddDivider()
+SL:AddInput('Keyword',    { Default='wolf', Text='Wolf keyword', Callback=function(t) S.WolfKeyword=(t~='' and t) or 'wolf' end })
+SL:AddInput('FolderName', { Default='', Text='NPC folder', Placeholder='auto', Callback=function(t) S.NPCFolderName=t end })
+SL:AddInput('QName',      { Default='', Text='Quest NPC', Callback=function(t) S.QuestNPCName=(t~='' and t) or nil end })
+SL:AddButton({ Text='Save quest pos', Func=function()
+    local h = GetHRP()
+    if h then S.QuestPos=h.Position; Library:Notify('Saved',3) end
+end })
+
+SR:AddToggle('ESPToggle', { Text='Show ESP', Default=false }):OnChanged(function(v)
+    S.ShowESP=v; if not v then ClearESP() end
+end)
+SR:AddSlider('ESPDist', { Text='ESP distance', Default=500, Min=50, Max=3000, Rounding=0, Callback=function(v) S.ESPDistance=v end })
+SR:AddButton({ Text='Refresh ESP', Func=function() pcall(UpdateESP) end })
+SR:AddButton({ Text='Clear ESP', Func=function() ClearESP() end })
+SR:AddDivider()
+SR:AddLabel('Shows: Name / HP / Dist')
+
+-- ==================== UI ====================
+if ThemeManager then
+    pcall(function()
+        ThemeManager:SetLibrary(Library)
+        ThemeManager:SetFolder('NZL Studio')
+        ThemeManager:ApplyToTab(Tabs.UI)
+    end)
+end
+if SaveManager then
+    pcall(function()
+        SaveManager:SetLibrary(Library)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetFolder('NZL Studio')
+        SaveManager:BuildConfigSection(Tabs.UI)
+        SaveManager:LoadAutoloadConfig()
+    end)
+end
+
+Library:Notify('NZL Studio!', 4)
